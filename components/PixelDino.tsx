@@ -77,28 +77,6 @@ export const PixelDino: React.FC<PixelDinoProps> = ({ type, size = 64, className
             <rect x="11" y="12" width="2" height="2" fill="#e67e22" />
           </svg>
         );
-      case 'ANKYLOSAURUS':
-        return (
-          <svg viewBox="0 0 16 16" width={size} height={size} className={className}>
-            <rect x="2" y="7" width="10" height="5" fill="#95a5a6" />
-            <rect x="3" y="6" width="1" height="1" fill="#ecf0f1" />
-            <rect x="6" y="6" width="1" height="1" fill="#ecf0f1" />
-            <rect x="9" y="6" width="1" height="1" fill="#ecf0f1" />
-            <rect x="12" y="8" width="3" height="3" fill="#95a5a6" />
-            <rect x="4" y="12" width="2" height="2" fill="#95a5a6" />
-            <rect x="9" y="12" width="2" height="2" fill="#95a5a6" />
-          </svg>
-        );
-      case 'BRACHIOSAURUS':
-        return (
-          <svg viewBox="0 0 16 16" width={size} height={size} className={className}>
-            <rect x="3" y="1" width="3" height="10" fill="#1abc9c" />
-            <rect x="6" y="1" width="2" height="2" fill="#1abc9c" />
-            <rect x="6" y="8" width="8" height="4" fill="#1abc9c" />
-            <rect x="6" y="12" width="2" height="2" fill="#1abc9c" />
-            <rect x="11" y="12" width="2" height="2" fill="#1abc9c" />
-          </svg>
-        );
       default:
         return null;
     }

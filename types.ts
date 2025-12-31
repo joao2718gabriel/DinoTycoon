@@ -5,9 +5,7 @@ export type DinosaurType =
   | 'PTERODACTYL' 
   | 'STEGOSAURUS' 
   | 'VELOCIRAPTOR'
-  | 'SPINOSAURUS'
-  | 'ANKYLOSAURUS'
-  | 'BRACHIOSAURUS';
+  | 'SPINOSAURUS';
 
 export type Rarity = 'COMUM' | 'RARO' | 'EPICO' | 'LENDARIO';
 
@@ -23,6 +21,12 @@ export interface Dinosaur {
   initialStock?: number;
 }
 
+export interface DeployedDino {
+  instanceId: string;
+  type: DinosaurType;
+  serial: number;
+}
+
 export interface FriendRequest {
   fromId: string;
   fromUsername: string;
@@ -35,10 +39,11 @@ export interface User {
   email: string;
   passwordHash: string;
   createdAt: string;
+  lastActiveAt: string;
   avatarType: DinosaurType;
   money: number;
-  // Agora mapeia o tipo para uma lista de números de série (ou [0] para infinitos)
   ownedDinos: Record<DinosaurType, number[]>;
+  territoryDinos: DeployedDino[]; // Máximo 5
   friends: string[];
   friendRequests: FriendRequest[];
 }
