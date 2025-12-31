@@ -4,6 +4,20 @@ import { DINOSAURS, INITIAL_STATE } from './constants';
 import { DinosaurType, Rarity, User, Dinosaur, FriendRequest, DeployedDino, MarketListing } from './types';
 import { PixelDino } from './components/PixelDino';
 
+import { useEffect } from 'react'
+import { supabase } from './lib/supabase'
+
+function App() {
+  useEffect(() => {
+    supabase
+      .from('users')
+      .select('*')
+      .then(res => console.log(res))
+  }, [])
+
+  return <div>DinoTycoon conectado 🦖</div>
+}
+
 type Screen = 'TERRITORIO' | 'SHOP' | 'ALBUM' | 'PROFILE' | 'FRIENDS' | 'VIEW_PROFILE' | 'MARKETPLACE';
 type AuthMode = 'LOGIN' | 'REGISTER';
 type ShopTab = 'GERAL' | 'LIMITADO';
