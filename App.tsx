@@ -7,6 +7,7 @@ import { PixelDino } from './components/PixelDino';
 type Screen = 'TERRITORIO' | 'SHOP' | 'ALBUM' | 'PROFILE' | 'FRIENDS' | 'VIEW_PROFILE';
 type AuthMode = 'LOGIN' | 'REGISTER';
 type ShopTab = 'GERAL' | 'LIMITADO';
+type AlbumTab = 'GERAL' | 'LIMITADO';
 type SocialTab = 'MEUS_AMIGOS' | 'PEDIDOS' | 'BUSCAR';
 
 interface OfflineReport {
@@ -27,9 +28,11 @@ const App: React.FC = () => {
   const [territoryDinos, setTerritoryDinos] = useState<DeployedDino[]>([]);
   const [activeScreen, setActiveScreen] = useState<Screen>('TERRITORIO');
   const [shopTab, setShopTab] = useState<ShopTab>('GERAL');
+  const [albumTab, setAlbumTab] = useState<AlbumTab>('GERAL');
   const [showNotification, setShowNotification] = useState<string | null>(null);
   const [selectedTerritoryDino, setSelectedTerritoryDino] = useState<DeployedDino | null>(null);
   const [shopDinoDetail, setShopDinoDetail] = useState<Dinosaur | null>(null);
+  const [albumDinoDetail, setAlbumDinoDetail] = useState<Dinosaur | null>(null);
   const [showDeployList, setShowDeployList] = useState(false);
   const [offlineReport, setOfflineReport] = useState<OfflineReport | null>(null);
   
@@ -100,7 +103,6 @@ const App: React.FC = () => {
     const now = Date.now();
     const diffSeconds = Math.floor((now - lastActive) / 1000);
     
-    // Mínimo de 30 segundos offline para gerar relatório, máximo de 24 horas (opcional)
     if (diffSeconds >= 30) {
       const income = (user.territoryDinos || []).reduce((acc, deployed) => {
         const dino = DINOSAURS[deployed.type];
@@ -523,7 +525,7 @@ const App: React.FC = () => {
                 const isOwned = serials.length > 0;
                 if (!isOwned) return null;
                 return (
-                  <div key={dino.id} className="p-4 bg-neutral-900 border-4 border-neutral-800 flex flex-col items-center shadow-lg">
+                  <div key={dino.id} className="p-4 bg-neutral-900 border-4 border-neutral-800 flex flex-col items-center shadow-lg cursor-pointer hover:bg-neutral-800 transition-all" onClick={() => setAlbumDinoDetail(dino)}>
                      <PixelDino type={dino.id} size={40} />
                      <p className="text-[6px] mt-4 text-center uppercase tracking-tighter text-white font-bold">{dino.name}</p>
                      <p className="text-[5px] text-yellow-500 mt-1 font-bold">{serials.length} UN.</p>
@@ -631,16 +633,17 @@ const App: React.FC = () => {
     );
   };
 
-  const renderDinoModal = (dino: Dinosaur) => {
+  const renderDinoModal = (dino: Dinosaur, isFromShop: boolean = true) => {
     if (!dino) return null;
     const styles = getRarityStyles(dino.rarity);
-    const isOwnedGeneral = !dino.isLimited && (ownedDinos[dino.id] || []).length > 0;
+    const serials = (ownedDinos[dino.id] || []);
+    const isOwnedGeneral = !dino.isLimited && serials.length > 0;
     const stock = marketStock[dino.id] || 0;
 
     return (
-      <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md" onClick={() => setShopDinoDetail(null)}>
+      <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md" onClick={() => isFromShop ? setShopDinoDetail(null) : setAlbumDinoDetail(null)}>
         <div className="bg-neutral-900 pixel-border w-full max-w-sm p-6 relative" onClick={e => e.stopPropagation()}>
-          <button onClick={() => setShopDinoDetail(null)} className="absolute -top-4 -right-4 bg-red-600 text-white w-8 h-8 flex items-center justify-center border-2 border-black font-bold shadow-xl">X</button>
+          <button onClick={() => isFromShop ? setShopDinoDetail(null) : setAlbumDinoDetail(null)} className="absolute -top-4 -right-4 bg-red-600 text-white w-8 h-8 flex items-center justify-center border-2 border-black font-bold shadow-xl">X</button>
           <div className="flex flex-col items-center gap-6">
             <div className={`p-8 bg-neutral-800 border-4 ${styles.border} transition-transform hover:scale-105`}><PixelDino type={dino.id} size={100} /></div>
             <div className="text-center space-y-3">
@@ -649,16 +652,23 @@ const App: React.FC = () => {
               <p className="text-[7px] text-neutral-400 leading-relaxed px-2 uppercase tracking-tighter font-bold">{dino.description}</p>
             </div>
             <div className="w-full space-y-4 pt-4 border-t border-neutral-800">
-              <div className="flex justify-between items-center text-[8px] uppercase tracking-tighter"><span className="text-neutral-500 font-bold">Custo:</span><span className="text-yellow-500 font-bold">R$ {dino.price.toLocaleString()}</span></div>
               <div className="flex justify-between items-center text-[8px] uppercase tracking-tighter"><span className="text-neutral-500 font-bold">Renda:</span><span className="text-green-500 font-bold">+R$ {dino.incomePerSecond}/s</span></div>
-              {dino.isLimited && <div className="flex justify-between items-center text-[8px] uppercase tracking-tighter"><span className="text-neutral-500 font-bold">Estoque:</span><span className="text-orange-500 font-bold">{stock} UN.</span></div>}
-              <button 
-                onClick={() => buyDino(dino)}
-                disabled={isOwnedGeneral || (dino.isLimited && stock <= 0) || money < dino.price}
-                className={`w-full py-4 text-[10px] font-bold border-b-4 transition-all ${isOwnedGeneral ? 'bg-neutral-700 opacity-50 cursor-not-allowed border-neutral-800 text-neutral-400' : money >= dino.price ? 'bg-green-600 border-green-900 hover:bg-green-500 text-white active:translate-y-1 active:border-b-0' : 'bg-neutral-800 opacity-50 border-neutral-950 text-neutral-500'}`}
-              >
-                {isOwnedGeneral ? 'JÁ POSSUI' : (dino.isLimited && stock <= 0) ? 'ESGOTADO' : `CONFIRMAR COMPRA`}
-              </button>
+              
+              {isFromShop ? (
+                <>
+                  <div className="flex justify-between items-center text-[8px] uppercase tracking-tighter"><span className="text-neutral-500 font-bold">Custo:</span><span className="text-yellow-500 font-bold">R$ {dino.price.toLocaleString()}</span></div>
+                  {dino.isLimited && <div className="flex justify-between items-center text-[8px] uppercase tracking-tighter"><span className="text-neutral-500 font-bold">Estoque:</span><span className="text-orange-500 font-bold">{stock} UN.</span></div>}
+                  <button 
+                    onClick={() => buyDino(dino)}
+                    disabled={isOwnedGeneral || (dino.isLimited && stock <= 0) || money < dino.price}
+                    className={`w-full py-4 text-[10px] font-bold border-b-4 transition-all ${isOwnedGeneral ? 'bg-neutral-700 opacity-50 cursor-not-allowed border-neutral-800 text-neutral-400' : money >= dino.price ? 'bg-green-600 border-green-900 hover:bg-green-500 text-white active:translate-y-1 active:border-b-0' : 'bg-neutral-800 opacity-50 border-neutral-950 text-neutral-500'}`}
+                  >
+                    {isOwnedGeneral ? 'JÁ POSSUI' : (dino.isLimited && stock <= 0) ? 'ESGOTADO' : `CONFIRMAR COMPRA`}
+                  </button>
+                </>
+              ) : (
+                <div className="flex justify-between items-center text-[8px] uppercase tracking-tighter"><span className="text-neutral-500 font-bold">Na Coleção:</span><span className="text-yellow-500 font-bold">{serials.length} UNIDADES</span></div>
+              )}
             </div>
           </div>
         </div>
@@ -670,7 +680,7 @@ const App: React.FC = () => {
     if (!offlineReport) return null;
     return (
       <div className="fixed inset-0 z-[300] bg-black/95 flex items-center justify-center p-6">
-        <div className="bg-neutral-900 pixel-border w-full max-w-sm p-8 text-center flex flex-col items-center gap-6 shadow-[0_0_50px_rgba(34,197,94,0.3)]">
+        <div className="bg-neutral-900 pixel-border w-full max-sm p-8 text-center flex flex-col items-center gap-6 shadow-[0_0_50px_rgba(34,197,94,0.3)]">
           <div className="p-6 bg-neutral-800 border-4 border-green-500 rounded-lg animate-pulse">
             <PixelDino type="TREX" size={80} />
           </div>
@@ -736,20 +746,43 @@ const App: React.FC = () => {
 
         {activeScreen === 'ALBUM' && (
           <div className="flex flex-col items-center gap-6">
-            <h2 className="text-xl text-purple-400 mb-4 uppercase tracking-widest font-bold">Sua Coleção</h2>
-            <div className="grid grid-cols-3 md:grid-cols-6 gap-4 w-full">
-              {(Object.values(DINOSAURS) as Dinosaur[]).map((dino) => {
+            <h2 className="text-xl text-purple-400 mb-4 uppercase tracking-widest font-bold">Álbum de Espécimes</h2>
+            
+            <div className="flex w-full bg-neutral-900 border-4 border-black p-1 mb-6 shadow-md">
+              <button onClick={() => setAlbumTab('GERAL')} className={`flex-1 py-3 text-[8px] font-bold tracking-widest transition-all ${albumTab === 'GERAL' ? 'bg-purple-600 text-black shadow-inner' : 'text-neutral-500 hover:text-white'}`}>GERAIS</button>
+              <button onClick={() => setAlbumTab('LIMITADO')} className={`flex-1 py-3 text-[8px] font-bold tracking-widest transition-all ${albumTab === 'LIMITADO' ? 'bg-yellow-600 text-black shadow-inner' : 'text-neutral-500 hover:text-white'}`}>LIMITADOS</button>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 w-full">
+              {(albumTab === 'GERAL' ? Object.values(DINOSAURS).filter(d => !d.isLimited) : Object.values(DINOSAURS).filter(d => d.isLimited)).map((dino) => {
                 const serials: number[] = (ownedDinos[dino.id] as number[]) || [];
                 const isOwned = serials.length > 0;
+                const styles = getRarityStyles(dino.rarity);
+                
                 return (
-                  <div key={dino.id} className={`p-4 border-4 flex flex-col items-center transition-all shadow-lg ${isOwned ? 'bg-neutral-800 border-yellow-500 scale-105' : 'bg-neutral-900 opacity-20 border-neutral-800 grayscale'}`}>
-                     <PixelDino type={dino.id} size={48} />
+                  <div 
+                    key={dino.id} 
+                    onClick={() => isOwned && setAlbumDinoDetail(dino)}
+                    className={`p-4 border-4 flex flex-col items-center transition-all shadow-lg ${isOwned ? `bg-neutral-800 ${styles.border} cursor-pointer hover:scale-105` : 'bg-neutral-900 opacity-20 border-neutral-800 grayscale'}`}
+                  >
+                     <div className="p-2 bg-neutral-900/50"><PixelDino type={dino.id} size={56} /></div>
                      <p className="text-[7px] mt-4 text-center uppercase tracking-tighter text-white font-bold">{isOwned ? dino.name : '???'}</p>
-                     {isOwned && <p className="text-[5px] text-neutral-400 mt-1 font-bold">{serials.length}x</p>}
+                     {isOwned && (
+                       <div className="mt-2 text-center">
+                         <span className={`text-[5px] px-1 py-0.5 ${styles.bg} ${styles.text} uppercase font-bold border border-black`}>{styles.label}</span>
+                         <p className="text-[5px] text-neutral-400 mt-1 font-bold">{serials.length} UNIDADES</p>
+                       </div>
+                     )}
                   </div>
                 );
               })}
             </div>
+            {Object.values(ownedDinos).flat().length === 0 && (
+              <div className="py-20 text-center opacity-30">
+                <p className="text-[8px] uppercase font-bold">Seu álbum está vazio...</p>
+                <p className="text-[6px] uppercase mt-2">Visite a seção de Genética!</p>
+              </div>
+            )}
           </div>
         )}
 
@@ -758,7 +791,8 @@ const App: React.FC = () => {
         {activeScreen === 'PROFILE' && renderProfileScreen()}
       </main>
 
-      {shopDinoDetail && renderDinoModal(shopDinoDetail)}
+      {shopDinoDetail && renderDinoModal(shopDinoDetail, true)}
+      {albumDinoDetail && renderDinoModal(albumDinoDetail, false)}
       {offlineReport && renderOfflineModal()}
 
       {showNotification && (
@@ -820,7 +854,7 @@ const App: React.FC = () => {
         {[
           { id: 'TERRITORIO', color: 'bg-yellow-600', label: 'TERRITÓRIO', badge: 0 },
           { id: 'SHOP', color: 'bg-green-600', label: 'GENÉTICA', badge: 0 },
-          { id: 'ALBUM', color: 'bg-purple-600', label: 'COLEÇÃO', badge: 0 },
+          { id: 'ALBUM', color: 'bg-purple-600', label: 'ÁLBUM', badge: 0 },
           { id: 'FRIENDS', color: 'bg-pink-600', label: 'SOCIAL', badge: pendingRequestsCount },
         ].map(tab => (
           <button key={tab.id} onClick={() => { setActiveScreen(tab.id as Screen); setIsEditingProfile(false); }} className={`flex-1 flex flex-col items-center justify-center gap-2 relative transition-all border-b-4 ${activeScreen === tab.id ? 'bg-neutral-800 border-white scale-105' : 'opacity-50 hover:opacity-100 border-transparent'}`}>
