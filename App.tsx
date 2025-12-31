@@ -1,14 +1,15 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { DINOSAURS, INITIAL_STATE } from './constants';
-import { DinosaurType, Rarity, User, Dinosaur, FriendRequest, DeployedDino } from './types';
+import { DinosaurType, Rarity, User, Dinosaur, FriendRequest, DeployedDino, MarketListing } from './types';
 import { PixelDino } from './components/PixelDino';
 
-type Screen = 'TERRITORIO' | 'SHOP' | 'ALBUM' | 'PROFILE' | 'FRIENDS' | 'VIEW_PROFILE';
+type Screen = 'TERRITORIO' | 'SHOP' | 'ALBUM' | 'PROFILE' | 'FRIENDS' | 'VIEW_PROFILE' | 'MARKETPLACE';
 type AuthMode = 'LOGIN' | 'REGISTER';
 type ShopTab = 'GERAL' | 'LIMITADO';
 type AlbumTab = 'GERAL' | 'LIMITADO';
 type SocialTab = 'MEUS_AMIGOS' | 'PEDIDOS' | 'BUSCAR';
+type MarketTab = 'COMPRAR' | 'MINHAS_VENDAS';
 
 interface OfflineReport {
   seconds: number;
@@ -38,6 +39,10 @@ const App: React.FC = () => {
   
   // --- Market State ---
   const [marketStock, setMarketStock] = useState<Record<string, number>>({});
+  const [marketListings, setMarketListings] = useState<MarketListing[]>([]);
+  const [marketTab, setMarketTab] = useState<MarketTab>('COMPRAR');
+  const [showSellModal, setShowSellModal] = useState(false);
+  const [sellForm, setSellForm] = useState({ price: 0, dinoIdx: -1, type: '' as DinosaurType, serial: -1 });
   
   // --- Social State ---
   const [socialTab, setSocialTab] = useState<SocialTab>('MEUS_AMIGOS');
@@ -133,6 +138,11 @@ const App: React.FC = () => {
       });
       setMarketStock(initialStock);
       localStorage.setItem('dino_market_stock', JSON.stringify(initialStock));
+    }
+
+    const savedListings = localStorage.getItem('dino_market_listings');
+    if (savedListings) {
+      setMarketListings(JSON.parse(savedListings));
     }
 
     const session = localStorage.getItem('dino_session');
@@ -297,6 +307,80 @@ const App: React.FC = () => {
     }
   };
 
+  // --- Marketplace Logic ---
+  const handleMarketListing = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentUser) return;
+    if (sellForm.price <= 0) return triggerNotification("PREÇO INVÁLIDO!");
+    
+    // Remover do inventário local
+    const newOwned = { ...ownedDinos };
+    const typeSerials = [...newOwned[sellForm.type]];
+    const removedSerial = typeSerials.splice(sellForm.dinoIdx, 1)[0];
+    newOwned[sellForm.type] = typeSerials;
+
+    // Também remover do território se estiver lá
+    setTerritoryDinos(prev => prev.filter(d => !(d.type === sellForm.type && d.serial === removedSerial)));
+
+    const newListing: MarketListing = {
+      id: Math.random().toString(36).substr(2, 9).toUpperCase(),
+      sellerId: currentUser.id,
+      sellerName: currentUser.username,
+      dinoType: sellForm.type,
+      serial: removedSerial,
+      price: sellForm.price,
+      createdAt: new Date().toISOString()
+    };
+
+    const newListings = [newListing, ...marketListings];
+    setMarketListings(newListings);
+    setOwnedDinos(newOwned);
+    localStorage.setItem('dino_market_listings', JSON.stringify(newListings));
+    setShowSellModal(false);
+    triggerNotification("DINO LISTADO NO MERCADO!");
+  };
+
+  const buyFromMarket = (listing: MarketListing) => {
+    if (!currentUser) return;
+    if (money < listing.price) return triggerNotification("DINHEIRO INSUFICIENTE!");
+    if (listing.sellerId === currentUser.id) return triggerNotification("VOCÊ JÁ É O DONO!");
+
+    // Atualizar comprador
+    setMoney(prev => prev - listing.price);
+    setOwnedDinos(prev => ({
+      ...prev,
+      [listing.dinoType]: [...(prev[listing.dinoType] || []), listing.serial]
+    }));
+
+    // Atualizar vendedor (se estiver online ou no storage)
+    const users = getAllUsers();
+    const seller = users.find(u => u.id === listing.sellerId);
+    if (seller) {
+      seller.money += listing.price;
+      saveToStorage(seller);
+    }
+
+    // Remover listagem
+    const newListings = marketListings.filter(l => l.id !== listing.id);
+    setMarketListings(newListings);
+    localStorage.setItem('dino_market_listings', JSON.stringify(newListings));
+    triggerNotification(`COMPROU ${DINOSAURS[listing.dinoType].name} #${listing.serial}!`);
+  };
+
+  const cancelMarketListing = (listing: MarketListing) => {
+    if (!currentUser) return;
+    // Devolver para o inventário
+    setOwnedDinos(prev => ({
+      ...prev,
+      [listing.dinoType]: [...(prev[listing.dinoType] || []), listing.serial]
+    }));
+    
+    const newListings = marketListings.filter(l => l.id !== listing.id);
+    setMarketListings(newListings);
+    localStorage.setItem('dino_market_listings', JSON.stringify(newListings));
+    triggerNotification("LISTAGEM CANCELADA.");
+  };
+
   // --- Social Logic ---
   const sendFriendRequest = (targetId: string) => {
     if (!currentUser) return;
@@ -418,6 +502,79 @@ const App: React.FC = () => {
             );
           })}
         </div>
+      </div>
+    );
+  };
+
+  const renderMarketplaceScreen = () => {
+    const mySales = marketListings.filter(l => l.sellerId === currentUser.id);
+    const otherSales = marketListings.filter(l => l.sellerId !== currentUser.id);
+
+    return (
+      <div className="flex flex-col items-center gap-6 max-w-4xl mx-auto">
+        <h2 className="text-xl text-cyan-400 mb-4 uppercase tracking-widest font-bold">Marketplace Rare-Gen</h2>
+        
+        <div className="flex w-full bg-neutral-900 border-4 border-black p-1 mb-6 shadow-md">
+          <button onClick={() => setMarketTab('COMPRAR')} className={`flex-1 py-3 text-[8px] font-bold tracking-widest transition-all ${marketTab === 'COMPRAR' ? 'bg-cyan-600 text-black shadow-inner' : 'text-neutral-500 hover:text-white'}`}>COMPRAR</button>
+          <button onClick={() => setMarketTab('MINHAS_VENDAS')} className={`flex-1 py-3 text-[8px] font-bold tracking-widest transition-all ${marketTab === 'MINHAS_VENDAS' ? 'bg-teal-600 text-black shadow-inner' : 'text-neutral-500 hover:text-white'}`}>MINHAS VENDAS</button>
+        </div>
+
+        {marketTab === 'COMPRAR' ? (
+          <div className="w-full grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {otherSales.map(listing => (
+              <div key={listing.id} className="bg-neutral-900 pixel-border p-6 flex flex-col items-center gap-4 hover:scale-[1.02] transition-transform">
+                <div className="relative">
+                  <PixelDino type={listing.dinoType} size={64} />
+                  <span className="absolute -top-2 -right-2 bg-orange-600 text-white text-[5px] px-1 py-0.5 border border-black font-bold">#{listing.serial}</span>
+                </div>
+                <div className="text-center">
+                  <h3 className="text-[8px] text-white uppercase font-bold tracking-tighter">{DINOSAURS[listing.dinoType].name}</h3>
+                  <p className="text-[6px] text-neutral-500 uppercase mt-1">Vendedor: {listing.sellerName}</p>
+                </div>
+                <div className="w-full flex justify-between items-center bg-neutral-800 p-2 mt-2">
+                  <span className="text-yellow-500 text-[9px] font-bold">R$ {listing.price.toLocaleString()}</span>
+                  <button 
+                    onClick={() => buyFromMarket(listing)}
+                    disabled={money < listing.price}
+                    className={`px-4 py-2 text-[7px] font-bold uppercase transition-all ${money >= listing.price ? 'bg-cyan-600 hover:bg-cyan-500 text-black shadow-[0_3px_0_#0891b2]' : 'bg-neutral-800 text-neutral-600 grayscale'}`}
+                  >
+                    COMPRAR
+                  </button>
+                </div>
+              </div>
+            ))}
+            {otherSales.length === 0 && (
+              <div className="col-span-full py-20 text-center opacity-30 flex flex-col items-center gap-4">
+                <p className="text-[8px] uppercase font-bold">Nenhum espécime raro à venda no momento...</p>
+                <PixelDino type="SPINOSAURUS" size={64} className="grayscale opacity-50" />
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="w-full space-y-6">
+            <button 
+              onClick={() => setShowSellModal(true)}
+              className="w-full bg-teal-600 hover:bg-teal-500 text-black py-4 text-[9px] font-bold uppercase border-b-4 border-teal-800 active:border-b-0 active:translate-y-1 transition-all mb-4"
+            >
+              + LISTAR NOVO DINOSSAURO (APENAS LIMITADOS)
+            </button>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {mySales.map(listing => (
+                <div key={listing.id} className="bg-neutral-800 border-2 border-neutral-700 p-4 flex items-center justify-between">
+                  <div className="flex items-center gap-4">
+                    <PixelDino type={listing.dinoType} size={42} />
+                    <div>
+                      <p className="text-[8px] text-white font-bold">{DINOSAURS[listing.dinoType].name} <span className="text-orange-500">#{listing.serial}</span></p>
+                      <p className="text-[7px] text-yellow-500 font-bold">R$ {listing.price.toLocaleString()}</p>
+                    </div>
+                  </div>
+                  <button onClick={() => cancelMarketListing(listing)} className="text-[6px] bg-red-900/40 text-red-500 border border-red-900 px-3 py-2 uppercase font-bold hover:bg-red-900/60 transition-all">REMOVER</button>
+                </div>
+              ))}
+            </div>
+            {mySales.length === 0 && <p className="text-center text-[7px] text-neutral-600 py-10 uppercase italic">Você não tem vendas ativas.</p>}
+          </div>
+        )}
       </div>
     );
   };
@@ -720,6 +877,7 @@ const App: React.FC = () => {
 
       <main className="mt-8 container mx-auto px-4 max-w-6xl">
         {activeScreen === 'TERRITORIO' && renderTerritoryScreen()}
+        {activeScreen === 'MARKETPLACE' && renderMarketplaceScreen()}
         
         {activeScreen === 'SHOP' && (
           <div className="flex flex-col items-center gap-6">
@@ -777,12 +935,6 @@ const App: React.FC = () => {
                 );
               })}
             </div>
-            {Object.values(ownedDinos).flat().length === 0 && (
-              <div className="py-20 text-center opacity-30">
-                <p className="text-[8px] uppercase font-bold">Seu álbum está vazio...</p>
-                <p className="text-[6px] uppercase mt-2">Visite a seção de Genética!</p>
-              </div>
-            )}
           </div>
         )}
 
@@ -794,6 +946,58 @@ const App: React.FC = () => {
       {shopDinoDetail && renderDinoModal(shopDinoDetail, true)}
       {albumDinoDetail && renderDinoModal(albumDinoDetail, false)}
       {offlineReport && renderOfflineModal()}
+
+      {/* Modal de Listagem no Mercado */}
+      {showSellModal && (
+        <div className="fixed inset-0 z-[150] bg-black/95 flex items-center justify-center p-4">
+          <div className="bg-neutral-900 pixel-border w-full max-w-lg flex flex-col">
+            <div className="p-6 border-b-2 border-neutral-800 flex justify-between items-center shadow-lg bg-teal-900/20">
+              <h3 className="text-[10px] text-teal-400 uppercase font-bold tracking-widest">Listar para Venda</h3>
+              <button onClick={() => setShowSellModal(false)} className="text-red-500 text-[10px] font-bold">X</button>
+            </div>
+            <form onSubmit={handleMarketListing} className="p-8 space-y-6">
+              <div className="space-y-3">
+                <label className="text-[8px] text-neutral-500 uppercase block font-bold">Selecione o Exemplar Limitado</label>
+                <div className="grid grid-cols-2 gap-3 max-h-48 overflow-y-auto pr-2 no-scrollbar">
+                  {(Object.entries(ownedDinos) as [DinosaurType, number[]][]).flatMap(([type, serials]) => 
+                    serials.map((serial, idx) => {
+                      if (!DINOSAURS[type].isLimited) return null;
+                      return (
+                        <div 
+                          key={`${type}-${serial}-${idx}`}
+                          onClick={() => setSellForm({...sellForm, type, serial, dinoIdx: idx})}
+                          className={`p-3 border-2 flex flex-col items-center gap-2 cursor-pointer transition-all ${sellForm.type === type && sellForm.serial === serial ? 'border-teal-500 bg-teal-900/30 shadow-lg scale-95' : 'bg-neutral-800 border-neutral-700 opacity-60'}`}
+                        >
+                          <PixelDino type={type} size={32} />
+                          <p className="text-[6px] text-white uppercase font-bold tracking-tighter">#{serial} {DINOSAURS[type].name}</p>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+              <div className="space-y-3">
+                <label className="text-[8px] text-neutral-500 uppercase block font-bold">Definir Preço (R$)</label>
+                <input 
+                  type="number" 
+                  required
+                  className="w-full bg-neutral-800 border-2 border-neutral-700 p-4 text-[12px] focus:outline-none focus:border-teal-500 text-yellow-500 font-bold"
+                  placeholder="DIGITE O VALOR..."
+                  value={sellForm.price || ''}
+                  onChange={e => setSellForm({...sellForm, price: Number(e.target.value)})}
+                />
+              </div>
+              <button 
+                type="submit"
+                disabled={sellForm.dinoIdx === -1 || sellForm.price <= 0}
+                className={`w-full py-4 text-[10px] font-bold uppercase transition-all border-b-4 ${sellForm.dinoIdx !== -1 && sellForm.price > 0 ? 'bg-teal-600 border-teal-800 text-black hover:bg-teal-500 active:translate-y-1 active:border-b-0' : 'bg-neutral-800 border-neutral-950 text-neutral-600 opacity-50 cursor-not-allowed'}`}
+              >
+                PUBLICAR OFERTA NO MERCADO
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
 
       {showNotification && (
         <div className="fixed top-28 left-1/2 -translate-x-1/2 bg-neutral-900 border-4 border-white px-8 py-4 text-[10px] z-[200] animate-bounce shadow-2xl text-yellow-500 text-center max-w-[80vw] uppercase font-bold tracking-widest">
@@ -850,18 +1054,19 @@ const App: React.FC = () => {
         </div>
       )}
 
-      <nav className="fixed bottom-0 left-0 w-full bg-neutral-900 border-t-4 border-black flex h-24 z-50 px-2 gap-2 pb-safe shadow-[0_-10px_30px_rgba(0,0,0,0.5)]">
+      <nav className="fixed bottom-0 left-0 w-full bg-neutral-900 border-t-4 border-black flex h-24 z-50 px-2 gap-1 pb-safe shadow-[0_-10px_30px_rgba(0,0,0,0.5)]">
         {[
-          { id: 'TERRITORIO', color: 'bg-yellow-600', label: 'TERRITÓRIO', badge: 0 },
+          { id: 'TERRITORIO', color: 'bg-yellow-600', label: 'CAMPO', badge: 0 },
           { id: 'SHOP', color: 'bg-green-600', label: 'GENÉTICA', badge: 0 },
+          { id: 'MARKETPLACE', color: 'bg-cyan-600', label: 'MERCADO', badge: 0 },
           { id: 'ALBUM', color: 'bg-purple-600', label: 'ÁLBUM', badge: 0 },
           { id: 'FRIENDS', color: 'bg-pink-600', label: 'SOCIAL', badge: pendingRequestsCount },
         ].map(tab => (
-          <button key={tab.id} onClick={() => { setActiveScreen(tab.id as Screen); setIsEditingProfile(false); }} className={`flex-1 flex flex-col items-center justify-center gap-2 relative transition-all border-b-4 ${activeScreen === tab.id ? 'bg-neutral-800 border-white scale-105' : 'opacity-50 hover:opacity-100 border-transparent'}`}>
-            <div className={`w-8 h-8 ${tab.color} border-2 border-black pixel-shadow transform transition-transform ${activeScreen === tab.id ? 'scale-110 rotate-2' : ''}`}>
+          <button key={tab.id} onClick={() => { setActiveScreen(tab.id as Screen); setIsEditingProfile(false); }} className={`flex-1 flex flex-col items-center justify-center gap-1.5 relative transition-all border-b-4 ${activeScreen === tab.id ? 'bg-neutral-800 border-white scale-105' : 'opacity-50 hover:opacity-100 border-transparent'}`}>
+            <div className={`w-7 h-7 ${tab.color} border-2 border-black pixel-shadow transform transition-transform ${activeScreen === tab.id ? 'scale-110 rotate-2' : ''}`}>
               {tab.badge > 0 && <span className="absolute -top-1 -right-1 bg-red-600 text-white text-[6px] w-4 h-4 flex items-center justify-center border border-black font-bold shadow-md">!</span>}
             </div>
-            <span className={`text-[7px] font-bold tracking-tighter uppercase ${activeScreen === tab.id ? 'text-white' : 'text-neutral-500'}`}>{tab.label}</span>
+            <span className={`text-[6px] font-bold tracking-tighter uppercase ${activeScreen === tab.id ? 'text-white' : 'text-neutral-500'}`}>{tab.label}</span>
           </button>
         ))}
       </nav>

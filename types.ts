@@ -32,6 +32,16 @@ export interface FriendRequest {
   fromUsername: string;
 }
 
+export interface MarketListing {
+  id: string;
+  sellerId: string;
+  sellerName: string;
+  dinoType: DinosaurType;
+  serial: number;
+  price: number;
+  createdAt: string;
+}
+
 export interface User {
   id: string;
   username: string;
