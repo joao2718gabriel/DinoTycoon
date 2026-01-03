@@ -61,7 +61,7 @@ export const DINOSAURS: Record<DinosaurType, Dinosaur> = {
 };
 
 export const INITIAL_STATE = {
-  money: 100,
+  money: 150,
   ownedDinos: {
     TREX: [],
     TRICERATOPS: [],
