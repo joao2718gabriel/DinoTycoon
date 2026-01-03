@@ -44,14 +44,20 @@ const App: React.FC = () => {
   const [socialTab, setSocialTab] = useState<SocialTab>('AMIGOS');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<User[]>([]);
+  const [viewingUser, setViewingUser] = useState<User | null>(null);
   const [friendsList, setFriendsList] = useState<User[]>([]);
 
   // --- Market State ---
+  const [marketStock, setMarketStock] = useState<Record<string, number>>({});
   const [marketListings, setMarketListings] = useState<MarketListing[]>([]);
   const [marketTab, setMarketTab] = useState<MarketTab>('COMPRAR');
   const [showSellModal, setShowSellModal] = useState(false);
   const [sellForm, setSellForm] = useState({ price: 0, dinoIdx: -1, type: '' as DinosaurType, serial: -1 });
   
+  // --- Profile Edit State ---
+  const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [editForm, setEditForm] = useState({ avatarType: 'VELOCIRAPTOR' as DinosaurType, password: '' });
+
   // --- Derived Data ---
   const totalIncome = useMemo(() => {
     return territoryDinos.reduce((acc, deployed) => {
@@ -72,14 +78,14 @@ const App: React.FC = () => {
     return val.toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 2 });
   };
 
-  // --- REFRESH MONEY ---
+  // --- REFRESH MONEY: Fonte de Verdade Atômica ---
   const refreshBalance = useCallback(async () => {
     if (!currentUser) return;
     const { data } = await supabase.from('users').select('money').eq('id', currentUser.id).maybeSingle();
     if (data) setMoney(Number(data.money));
   }, [currentUser]);
 
-  // --- SAVE USER STATE ---
+  // --- SAVE USER STATE: Nunca toca no Money ---
   const saveUserState = async (partial: {
     ownedDinos?: any;
     territoryDinos?: any;
@@ -114,6 +120,12 @@ const App: React.FC = () => {
         createdAt: l.created_at
       })));
     }
+    const { data: stock } = await supabase.from('market_global_stock').select('*');
+    if (stock) {
+      const stockMap: Record<string, number> = {};
+      stock.forEach((s: any) => stockMap[s.dino_id] = s.stock);
+      setMarketStock(stockMap);
+    }
   }, []);
 
   // --- Carregamento de Sessão ---
@@ -145,6 +157,7 @@ const App: React.FC = () => {
           setMoney(loadedUser.money);
           setOwnedDinos(loadedUser.ownedDinos);
           setTerritoryDinos(loadedUser.territoryDinos);
+          setEditForm({ avatarType: loadedUser.avatarType, password: '' });
           
           if (user.last_active_at) {
             const lastActive = new Date(user.last_active_at).getTime();
@@ -178,25 +191,30 @@ const App: React.FC = () => {
     return () => clearInterval(visualTimer);
   }, [currentUser, totalIncome]);
 
-  // --- CHECKPOINT DE RENDA ---
+  // --- CHECKPOINT DE RENDA (Backend Autoridade Máxima) ---
   useEffect(() => {
     if (!currentUser || totalIncome <= 0) return;
+
     const syncCheckpoint = setInterval(async () => {
       const amount = totalIncome * 10;
+      // 1. Pede para o banco somar (Atômico)
       const { data: newBalance, error } = await supabase.rpc('add_money_safe', { 
         p_user_id: currentUser.id, 
         p_amount: amount 
       });
+
+      // 2. Atualiza UI apenas com a resposta do banco (Corrige drift visual)
       if (!error && newBalance !== null) {
         setMoney(Number(newBalance));
       } else {
         await refreshBalance();
       }
     }, 10000);
+
     return () => clearInterval(syncCheckpoint);
   }, [currentUser, totalIncome, refreshBalance]);
 
-  // --- Autosave ---
+  // --- Autosave Dinos/Território ---
   useEffect(() => {
     if (!currentUser || isLoading) return;
     const timeout = setTimeout(async () => {
@@ -205,49 +223,95 @@ const App: React.FC = () => {
     return () => clearTimeout(timeout);
   }, [ownedDinos, territoryDinos, currentUser, isLoading]);
 
+  // --- Heartbeat Timestamp ---
+  useEffect(() => {
+    if (!currentUser) return;
+    const heartbeat = setInterval(async () => {
+      await supabase.from('users').update({ last_active_at: new Date().toISOString() }).eq('id', currentUser.id);
+    }, 30000);
+    return () => clearInterval(heartbeat);
+  }, [currentUser]);
+
+  // --- Social Logic ---
+  useEffect(() => {
+    const searchUsers = async () => {
+      if (searchQuery.length < 2) {
+        setSearchResults([]);
+        return;
+      }
+      const { data } = await supabase.from('users').select('id, username, avatarType:avatar_type, territoryDinos:territory_dinos').ilike('username', `%${searchQuery}%`).limit(10);
+      if (data) setSearchResults(data.filter((u: any) => u.id !== currentUser?.id) as any);
+    };
+    const timer = setTimeout(searchUsers, 500);
+    return () => clearTimeout(timer);
+  }, [searchQuery, currentUser]);
+
+  useEffect(() => {
+    const fetchFriends = async () => {
+      if (!currentUser || currentUser.friends.length === 0) {
+        setFriendsList([]);
+        return;
+      }
+      const { data } = await supabase.from('users').select('id, username, avatarType:avatar_type, territoryDinos:territory_dinos').in('id', currentUser.friends);
+      if (data) setFriendsList(data as any);
+    };
+    if (activeScreen === 'SOCIAL') fetchFriends();
+  }, [activeScreen, currentUser]);
+
+  const sendFriendRequest = async (targetId: string) => {
+    if (!currentUser) return;
+    const { data: targetRaw } = await supabase.from('users').select('friend_requests').eq('id', targetId).maybeSingle();
+    const target = targetRaw as any;
+    if (target) {
+      const requests = target.friend_requests || [];
+      if (requests.some((r: any) => r.fromId === currentUser.id)) return triggerNotification("PEDIDO JÁ ENVIADO!");
+      requests.push({ fromId: currentUser.id, fromUsername: currentUser.username });
+      await supabase.from('users').update({ friend_requests: requests }).eq('id', targetId);
+      triggerNotification("PEDIDO ENVIADO!");
+    }
+  };
+
+  const acceptFriendRequest = async (requestId: string) => {
+    if (!currentUser) return;
+    const { data: otherRaw } = await supabase.from('users').select('friends').eq('id', requestId).maybeSingle();
+    const other = otherRaw as any;
+    if (other) {
+      const myFriends = [...currentUser.friends, requestId];
+      const otherFriends = [...(other.friends || []), currentUser.id];
+      const myRequests = currentUser.friendRequests.filter(r => r.fromId !== requestId);
+      await supabase.from('users').update({ friends: myFriends, friend_requests: myRequests }).eq('id', currentUser.id);
+      await supabase.from('users').update({ friends: otherFriends }).eq('id', requestId);
+      setCurrentUser({ ...currentUser, friends: myFriends, friendRequests: myRequests });
+      triggerNotification("AMIGO ADICIONADO!");
+    }
+  };
+
+  const removeFriend = async (friendId: string) => {
+    if (!currentUser) return;
+    const { data: otherRaw } = await supabase.from('users').select('friends').eq('id', friendId).maybeSingle();
+    const other = otherRaw as any;
+    const myFriends = currentUser.friends.filter(id => id !== friendId);
+    await supabase.from('users').update({ friends: myFriends }).eq('id', currentUser.id);
+    if (other) {
+      const otherFriends = (other.friends || []).filter((id: string) => id !== currentUser.id);
+      await supabase.from('users').update({ friends: otherFriends }).eq('id', friendId);
+    }
+    setCurrentUser({ ...currentUser, friends: myFriends });
+    triggerNotification("AMIGO REMOVIDO.");
+  };
+
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     if (authMode === 'REGISTER') {
-      // 1. Verificação de Unicidade de Nome (Permite letras minúsculas agora)
-      const { data: existingName } = await supabase.from('users').select('id').eq('username', authForm.username).maybeSingle();
-      if (existingName) return triggerNotification("ESTE NOME JÁ ESTÁ EM USO!");
-
-      // 2. Verificação de Unicidade de E-mail
-      const { data: existingEmail } = await supabase.from('users').select('id').eq('email', authForm.email).maybeSingle();
-      if (existingEmail) return triggerNotification("E-MAIL JÁ REGISTRADO!");
-
+      const { data: existing } = await supabase.from('users').select('id').or(`username.eq.${authForm.username},email.eq.${authForm.email}`).maybeSingle();
+      if (existing) return triggerNotification("DADOS EM USO!");
       const userId = crypto.randomUUID();
-      const newUser = { 
-        id: userId, 
-        username: authForm.username, 
-        display_name: authForm.username, 
-        email: authForm.email, 
-        password_hash: authForm.password, 
-        money: 150, 
-        owned_dinos: INITIAL_STATE.ownedDinos, 
-        territory_dinos: [], 
-        avatar_type: 'VELOCIRAPTOR', 
-        friends: [], 
-        friend_requests: [], 
-        created_at: new Date().toISOString(), 
-        last_active_at: new Date().toISOString() 
-      };
-      
+      const newUser = { id: userId, username: authForm.username, display_name: authForm.username, email: authForm.email, password_hash: authForm.password, money: 150, owned_dinos: INITIAL_STATE.ownedDinos, territory_dinos: [], avatar_type: 'VELOCIRAPTOR', friends: [], friend_requests: [], created_at: new Date().toISOString(), last_active_at: new Date().toISOString() };
       const { error } = await supabase.from('users').insert(newUser);
-      if (!error) { 
-        triggerNotification("DNA REGISTRADO! ACESSE AGORA."); 
-        setAuthMode('LOGIN'); 
-      } else {
-        triggerNotification("ERRO NO PROTOCOLO DE REGISTRO!");
-      }
+      if (!error) { triggerNotification("CONTA CRIADA!"); setAuthMode('LOGIN'); }
+      else triggerNotification("ERRO!");
     } else {
-      // Login aceita nome de usuário ou e-mail
-      const { data: userRaw } = await supabase.from('users')
-        .select('*')
-        .or(`email.eq."${authForm.email}",username.eq."${authForm.email}"`)
-        .eq('password_hash', authForm.password)
-        .maybeSingle();
-      
+      const { data: userRaw } = await supabase.from('users').select('*').or(`email.eq.${authForm.email},username.eq.${authForm.email}`).eq('password_hash', authForm.password).maybeSingle();
       const user = userRaw as any;
       if (user) {
         const loadedUser: User = { id: user.id, username: user.username, displayName: user.display_name, email: user.email, passwordHash: user.password_hash, createdAt: user.created_at, lastActiveAt: user.last_active_at, avatarType: user.avatar_type as DinosaurType, money: Number(user.money), ownedDinos: user.owned_dinos, territoryDinos: user.territory_dinos || [], friends: user.friends || [], friendRequests: user.friend_requests || [] };
@@ -258,16 +322,21 @@ const App: React.FC = () => {
         setMoney(loadedUser.money);
         setOwnedDinos(loadedUser.ownedDinos);
         setTerritoryDinos(loadedUser.territoryDinos);
-        triggerNotification(`BEM-VINDO AO PARQUE!`);
-      } else {
-        triggerNotification("ACESSO NEGADO: DADOS INVÁLIDOS!");
-      }
+        setEditForm({ avatarType: loadedUser.avatarType, password: '' });
+        triggerNotification(`BEM-VINDO!`);
+      } else triggerNotification("INVÁLIDO!");
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    if (currentUser) {
+      await supabase.from('users').update({ last_active_at: new Date().toISOString() }).eq('id', currentUser.id);
+    }
     localStorage.removeItem('dino_user_id');
-    window.location.reload();
+    hasLoadedUser.current = false;
+    setCurrentUser(null);
+    setActiveScreen('TERRITORIO');
+    setOfflineReport(null);
   };
 
   const buyDino = async (dino: Dinosaur) => {
@@ -353,75 +422,22 @@ const App: React.FC = () => {
   };
 
   // --- Rendering UI ---
-  if (isLoading && !currentUser) return <div className="min-h-screen flex items-center justify-center bg-neutral-950 text-[10px] text-yellow-500 uppercase">Extraindo DNA do Âmbar...</div>;
+  if (isLoading && !currentUser) return <div className="min-h-screen flex items-center justify-center bg-neutral-950 text-[10px] text-yellow-500 uppercase">Aguardando Conexão...</div>;
 
   if (!currentUser) return (
-    <div className="min-h-screen flex items-center justify-center p-4 bg-neutral-950 overflow-y-auto">
-      <div className="w-full max-w-sm bg-neutral-900 pixel-border p-8 text-center my-10 shadow-[0_0_50px_rgba(0,0,0,0.8)]">
-        <div className="flex justify-center mb-6">
-          <PixelDino type="TREX" size={120} className="animate-bounce" />
-        </div>
-        <h1 className="text-xl text-yellow-500 mb-2 uppercase tracking-tighter">DINO TYCOON</h1>
-        <p className="text-[7px] text-neutral-500 mb-8 uppercase tracking-widest border-b border-neutral-800 pb-4">Terminal de Identificação</p>
-        
-        <form onSubmit={handleAuth} className="space-y-6 text-left">
+    <div className="min-h-screen flex items-center justify-center p-4 bg-neutral-950">
+      <div className="w-full max-w-sm bg-neutral-900 pixel-border p-8 text-center">
+        <PixelDino type="TREX" size={100} className="animate-bounce mb-6" />
+        <h1 className="text-lg text-yellow-500 mb-8 uppercase tracking-tighter">DINO TYCOON</h1>
+        <form onSubmit={handleAuth} className="space-y-6">
           {authMode === 'REGISTER' && (
-            <div className="space-y-2">
-              <div className="flex justify-between items-end">
-                <label className="text-[7px] text-neutral-400 uppercase">Nome de Usuário</label>
-                <span className="text-[5px] text-neutral-600 uppercase">Deve ser único</span>
-              </div>
-              <input 
-                className="w-full bg-neutral-800 border-4 border-black p-4 text-[9px] text-white focus:border-yellow-500 outline-none placeholder:opacity-20" 
-                placeholder="EX: DinoPlayer_01" 
-                value={authForm.username} 
-                onChange={e => setAuthForm({...authForm, username: e.target.value})} 
-                required 
-              />
-            </div>
+            <input className="w-full bg-neutral-800 border-2 border-neutral-700 p-3 text-[9px] text-white uppercase" placeholder="Usuário" value={authForm.username} onChange={e => setAuthForm({...authForm, username: e.target.value})} required />
           )}
-          
-          <div className="space-y-2">
-            <div className="flex justify-between items-end">
-              <label className="text-[7px] text-neutral-400 uppercase">
-                {authMode === 'LOGIN' ? 'Usuário ou E-mail' : 'Endereço de E-mail'}
-              </label>
-              {authMode === 'REGISTER' && <span className="text-[5px] text-neutral-600 uppercase">Deve ser único</span>}
-            </div>
-            <input 
-              className="w-full bg-neutral-800 border-4 border-black p-4 text-[9px] text-white focus:border-yellow-500 outline-none placeholder:opacity-20" 
-              placeholder={authMode === 'LOGIN' ? "NOME OU E-MAIL" : "EMAIL@JURASSICO.COM"} 
-              value={authForm.email} 
-              onChange={e => setAuthForm({...authForm, email: e.target.value})} 
-              required 
-            />
-          </div>
-
-          <div className="space-y-2">
-            <label className="text-[7px] text-neutral-400 uppercase">Código de Acesso</label>
-            <input 
-              type="password" 
-              className="w-full bg-neutral-800 border-4 border-black p-4 text-[9px] text-white focus:border-yellow-500 outline-none placeholder:opacity-20" 
-              placeholder="••••••••" 
-              value={authForm.password} 
-              onChange={e => setAuthForm({...authForm, password: e.target.value})} 
-              required 
-            />
-          </div>
-
-          <button className="w-full bg-yellow-600 hover:bg-yellow-500 text-black py-5 text-[9px] font-bold border-b-8 border-yellow-800 active:border-b-4 active:translate-y-1 transition-all uppercase shadow-lg">
-            {authMode === 'LOGIN' ? 'Abrir Portões' : 'Registrar Perfil'}
-          </button>
+          <input className="w-full bg-neutral-800 border-2 border-neutral-700 p-3 text-[9px] text-white" placeholder="Email" value={authForm.email} onChange={e => setAuthForm({...authForm, email: e.target.value})} required />
+          <input type="password" className="w-full bg-neutral-800 border-2 border-neutral-700 p-3 text-[9px] text-white" placeholder="Senha" value={authForm.password} onChange={e => setAuthForm({...authForm, password: e.target.value})} required />
+          <button className="w-full bg-yellow-600 hover:bg-yellow-500 text-black py-4 text-[9px] font-bold border-b-4 border-yellow-800">{authMode === 'LOGIN' ? 'ENTRAR' : 'CADASTRAR'}</button>
         </form>
-
-        <div className="mt-8 pt-6 border-t border-neutral-800">
-          <button 
-            onClick={() => setAuthMode(authMode === 'LOGIN' ? 'REGISTER' : 'LOGIN')} 
-            className="text-[7px] text-neutral-500 hover:text-white uppercase underline decoration-yellow-700 underline-offset-4 tracking-tighter transition-colors"
-          >
-            {authMode === 'LOGIN' ? 'Não possuo cadastro (Novo DNA)' : 'Já sou um Guardião (Acessar)'}
-          </button>
-        </div>
+        <button onClick={() => setAuthMode(authMode === 'LOGIN' ? 'REGISTER' : 'LOGIN')} className="mt-8 text-[7px] text-neutral-500 hover:text-white uppercase underline">{authMode === 'LOGIN' ? 'Nova Conta' : 'Já possuo conta'}</button>
       </div>
     </div>
   );
@@ -434,7 +450,7 @@ const App: React.FC = () => {
            <div className="flex flex-col ml-4"><span className="text-[6px] text-neutral-500 uppercase font-bold">Renda Passiva</span><span className="text-[10px] text-green-500 font-bold">+R$ {totalIncome.toFixed(1)}/s</span></div>
            {isSaving && <div className="w-2 h-2 bg-blue-500 rounded-full animate-ping ml-2"></div>}
         </div>
-        <button onClick={() => setActiveScreen('PROFILE')} className={`w-14 h-14 rounded-full border-4 shadow-inner bg-neutral-800 flex items-center justify-center overflow-hidden transition-all ${activeScreen === 'PROFILE' ? 'border-yellow-500 scale-110' : 'border-yellow-600'}`}><PixelDino type={currentUser.avatarType} size={42} /></button>
+        <button onClick={() => { setActiveScreen('PROFILE'); setIsEditingProfile(false); }} className={`w-14 h-14 rounded-full border-4 shadow-inner bg-neutral-800 flex items-center justify-center overflow-hidden transition-all ${activeScreen === 'PROFILE' ? 'border-yellow-500 scale-110' : 'border-yellow-600'}`}><PixelDino type={currentUser.avatarType} size={42} /></button>
       </div>
 
       <main className="mt-8 container mx-auto px-4 max-w-6xl">
@@ -504,7 +520,7 @@ const App: React.FC = () => {
 
         {activeScreen === 'PROFILE' && (
           <div className="flex flex-col items-center gap-8 max-w-xl mx-auto">
-            <div className="w-full bg-neutral-900 pixel-border p-8 text-center"><div className="flex justify-center mb-6"><PixelDino type={currentUser.avatarType} size={100} /></div><h3 className="text-lg text-white mb-2">{currentUser.username}</h3><p className="text-[7px] text-blue-400 mb-6 uppercase">{currentUser.email}</p><button onClick={handleLogout} className="text-[8px] text-red-500 underline font-bold uppercase">Encerrar Sessão</button></div>
+            <div className="w-full bg-neutral-900 pixel-border p-8 text-center"><div className="flex justify-center mb-6"><PixelDino type={currentUser.avatarType} size={100} /></div><h3 className="text-lg uppercase text-white mb-2">{currentUser.username}</h3><p className="text-[7px] text-blue-400 mb-6 uppercase">{currentUser.email}</p><button onClick={handleLogout} className="text-[8px] text-red-500 underline font-bold uppercase">Sair da Conta</button></div>
           </div>
         )}
 
@@ -514,9 +530,12 @@ const App: React.FC = () => {
       </main>
 
       <nav className="fixed bottom-0 left-0 w-full bg-neutral-900 border-t-4 border-black flex h-24 z-50">
-        {[{ id: 'TERRITORIO', label: 'CAMPO' }, { id: 'SHOP', label: 'LOJA' }, { id: 'MARKETPLACE', label: 'MERCADO' }, { id: 'ALBUM', label: 'ÁLBUM' }].map(tab => (
+        {[{ id: 'TERRITORIO', label: 'CAMPO' }, { id: 'SHOP', label: 'LOJA' }, { id: 'MARKETPLACE', label: 'MERCADO' }, { id: 'SOCIAL', label: 'SOCIAL' }, { id: 'ALBUM', label: 'ÁLBUM' }].map(tab => (
           <button key={tab.id} onClick={() => setActiveScreen(tab.id as Screen)} className={`relative flex-1 flex flex-col items-center justify-center gap-1.5 ${activeScreen === tab.id ? 'bg-neutral-800 text-yellow-500' : 'text-neutral-500'}`}>
             <span className="text-[7px] font-bold uppercase">{tab.label}</span>
+            {tab.id === 'SOCIAL' && pendingRequestsCount > 0 ? (
+              <span className="absolute top-4 right-6 w-3 h-3 bg-red-600 rounded-full text-[6px] flex items-center justify-center text-white">{pendingRequestsCount}</span>
+            ) : null}
           </button>
         ))}
       </nav>
